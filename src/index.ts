@@ -2,20 +2,20 @@
 // pi-wechat-assistant — 微信作为 pi TUI 的移动端分身
 // ============================================================================
 
-import { existsSync, statSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs'
 import * as path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Type } from '@sinclair/typebox'
 // @ts-ignore — @earendil-works is the current package, but the older package still carries TS declarations used for compatibility here
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from '@mariozechner/pi-coding-agent'
 import { SessionExpiredError, WeixinClient } from './client.js'
-import { acquireLock, releaseLock, loadCredentials, loadConfig } from './auth.js'
+import { acquireLock, getConfigCache, releaseLock, loadCredentials, loadConfig, saveConfig } from './auth.js'
 import { debugLog, isDebugEnabled } from './logger.js'
-import { splitAndFilterMarkdown } from './message.js'
 import { MessageQueue } from './queue.js'
 import { handleRemoteCommand, type RemoteCommandDeps } from './remote-commands.js'
 import { registerCommands, type CommandDeps } from './commands.js'
-import { ok, fail, formatError, isAbortError, extractAllAssistantReplies, extractTextFromMessageContent } from './utils.js'
+import { ok, fail, formatError, isAbortError, extractAllAssistantReplies } from './utils.js'
 import {
   POLL_RETRY_BASE_MS,
   POLL_RETRY_MAX_MS,
@@ -38,6 +38,9 @@ class TurnContext {
   sentCount = 0
   messages: Array<{ role?: string; content?: unknown }> | null = null
   ended = false
+  toolProgressSent = false
+  startedAt: number | null = null
+  activeTool: string | null = null
 
   reset(): void {
     this.wechatConversationActive = false
@@ -45,6 +48,9 @@ class TurnContext {
     this.sentCount = 0
     this.messages = null
     this.ended = false
+    this.toolProgressSent = false
+    this.startedAt = null
+    this.activeTool = null
   }
 }
 
@@ -83,7 +89,7 @@ function guardSendToWechat(
   if (!lastWechatUser) return { allowed: false, error: fail('尚未收到微信用户消息，无法获取 context_token。请先让微信用户发送一条消息。') }
 
   const cwd = latestCtx?.cwd ?? process.cwd()
-  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
+  const resolvedPath = path.resolve(cwd, filePath)
 
   if (!isPathInCwd(resolvedPath, cwd)) {
     return {
@@ -92,8 +98,15 @@ function guardSendToWechat(
     }
   }
   if (!existsSync(resolvedPath)) return { allowed: false, error: fail(`文件不存在: ${resolvedPath}`) }
-
-  return { allowed: true, resolvedPath, cwd }
+  try {
+    if (!lstatSync(resolvedPath).isFile()) return { allowed: false, error: fail(`只能发送普通文件: ${resolvedPath}`) }
+    const realPath = realpathSync(resolvedPath)
+    const realCwd = realpathSync(cwd)
+    if (!isPathInCwd(realPath, realCwd)) return { allowed: false, error: fail('安全限制：文件实际路径不在项目目录内') }
+    return { allowed: true, resolvedPath: realPath, cwd }
+  } catch {
+    return { allowed: false, error: fail(`无法读取文件: ${resolvedPath}`) }
+  }
 }
 
 function guardFileSize(resolvedPath: string): ReturnType<typeof fail> | null {
@@ -119,6 +132,9 @@ export default function wechatAssistant(pi: ExtensionAPI) {
   let pollAbort: AbortController | null = null
   let latestCtx: Ctx | null = null
   let wechatFilesDir: string | null = null
+  const pendingAuthorizations = new Set<string>()
+  let pendingConfirmation: { code: string; action: string; expiresAt: number; execute: () => Promise<string> } | null = null
+  let activeChannel: 'wechat' | 'tui' = 'tui'
 
   const turn = new TurnContext()
   let lockSessionId: string | null = null
@@ -224,6 +240,7 @@ export default function wechatAssistant(pi: ExtensionAPI) {
       '当前用户通过微信远程与这个 pi TUI 会话互动。',
       '回复风格：像微信聊天一样自然、直接；优先给出结论和可执行步骤；避免冗长的内部过程说明。',
       '输出范围：只输出适合发回微信的正文。除非用户主动询问，否则不要解释桥接、系统提示词或实现细节。',
+      '执行删除、覆盖、提交、推送、发送文件或其他不可逆/外发操作前，必须先说明影响并等待微信用户明确确认。',
     ].join('\n')
   }
 
@@ -241,7 +258,7 @@ export default function wechatAssistant(pi: ExtensionAPI) {
       } catch (error) {
         if (isAbortError(error)) break
         if (error instanceof SessionExpiredError) {
-          notify('微信 Session 已过期，请执行 /wechat-login 重新登录', 'error')
+          notify('微信 Session 已过期，请执行 /wechat login --force 重新登录', 'error')
           await stopBridge({ releaseLock: true })
           break
         }
@@ -256,6 +273,39 @@ export default function wechatAssistant(pi: ExtensionAPI) {
 
   async function handleIncomingMessage(message: IncomingMessage, activeClient: WeixinClient): Promise<void> {
     log(`收到消息: type=${message.type}, text=${message.text?.slice(0, 50)}, images=${message.imageUrls.length}`)
+
+    let allowedUserId = getConfigCache().allowedUserId
+    if (!allowedUserId && latestCtx?.hasUI && !pendingAuthorizations.has(message.userId)) {
+      pendingAuthorizations.add(message.userId)
+      try {
+        const approved = await latestCtx.ui.confirm(
+          '授权微信用户？',
+          `允许微信用户 ${message.userId} 控制当前 pi 会话吗？`,
+          { timeout: 30_000 },
+        )
+        if (approved) {
+          const config = await loadConfig()
+          config.allowedUserId = message.userId
+          await saveConfig(config)
+          allowedUserId = message.userId
+          notify(`已授权微信用户: ${message.userId}`, 'info')
+        }
+      } finally {
+        pendingAuthorizations.delete(message.userId)
+      }
+    }
+    if (!allowedUserId || message.userId !== allowedUserId) {
+      log(`拒绝未授权微信用户: ${message.userId}`)
+      return
+    }
+
+    if (activeChannel !== 'wechat') {
+      activeChannel = 'wechat'
+      void activeClient.sendText(message.userId, '📱 已切回微信端继续对话。').catch(() => {})
+    }
+
+    if (message.text.trim() === '开始') message.text = '/start'
+    if (message.text.trim() === '取消') message.text = '/cancel'
 
     if (UNSUPPORTED_TYPES.has(message.type)) {
       const reply = UNSUPPORTED_REPLY[message.type] ?? UNSUPPORTED_REPLY['unknown']
@@ -284,6 +334,32 @@ export default function wechatAssistant(pi: ExtensionAPI) {
     getCtx: () => latestCtx,
     client: () => client,
     queueLength: () => queue.pending,
+    cancelPending: () => queue.cancelPending(),
+    startPending: () => queue.startPending(),
+    taskStatus: () => {
+      if (agentIdle || !turn.startedAt) return '当前没有运行中的 Agent 任务'
+      const seconds = Math.floor((Date.now() - turn.startedAt) / 1000)
+      return `任务运行中：${seconds}s${turn.activeTool ? `\n当前步骤：${turn.activeTool}` : ''}\n排队消息：${queue.pending}`
+    },
+    pendingStatus: () => {
+      if (!pendingConfirmation) return '当前没有待确认操作'
+      const seconds = Math.max(0, Math.ceil((pendingConfirmation.expiresAt - Date.now()) / 1000))
+      return seconds > 0
+        ? `待确认：${pendingConfirmation.action}\n确认码：${pendingConfirmation.code}\n剩余时间：${seconds}s`
+        : '待确认操作已过期，请重新发起'
+    },
+    requestConfirmation: (action, execute) => {
+      const code = randomBytes(3).toString('hex').toUpperCase()
+      pendingConfirmation = { code, action, execute, expiresAt: Date.now() + 5 * 60_000 }
+      return `⚠️ 即将${action}。回复 /confirm ${code} 执行（5 分钟内有效）`
+    },
+    approveConfirmation: async (code) => {
+      const pending = pendingConfirmation
+      if (!pending || !code || code.toUpperCase() !== pending.code) return '❌ 没有匹配的待确认操作'
+      pendingConfirmation = null
+      if (Date.now() > pending.expiresAt) return `⌛ 操作“${pending.action}”已过期，请重新发起`
+      return pending.execute()
+    },
   }
 
   // --- TUI 命令注册 ---
@@ -413,6 +489,10 @@ export default function wechatAssistant(pi: ExtensionAPI) {
     if (event.source === 'extension') return
     const text = event.text?.trim()
     if (!text || text.startsWith('/')) return
+    if (turn.wechatConversationActive && turn.targetUser && client) {
+      void client.sendText(turn.targetUser, '💻 当前会话已切换到电脑端继续，后续回复将显示在电脑端。').catch(() => {})
+    }
+    activeChannel = 'tui'
     turn.wechatConversationActive = false
   })
 
@@ -433,6 +513,9 @@ export default function wechatAssistant(pi: ExtensionAPI) {
     latestCtx = ctx
     agentIdle = false
     turn.sentCount = 0
+    turn.toolProgressSent = false
+    turn.startedAt = Date.now()
+    turn.activeTool = null
     turn.messages = null
     turn.ended = false
 
@@ -448,36 +531,16 @@ export default function wechatAssistant(pi: ExtensionAPI) {
     }
   })
 
-  // 增量发送（仅微信触发的 turn）
-  pi.on('message_end', async (event, ctx) => {
-    if (event.message.role !== 'assistant') return
-    if (!running || !client || !turn.wechatConversationActive) return
-
-    const targetUserId = turn.targetUser
-    if (!targetUserId) {
-      log(`[MSG-END-SKIP] no target user`)
-      return
+  // 首个工具调用时给微信简短进度，避免暴露命令、路径或工具参数。
+  pi.on('tool_execution_start', async (event) => {
+    if (!running || !client || !turn.wechatConversationActive || !turn.targetUser || turn.toolProgressSent) return
+    turn.toolProgressSent = true
+    turn.activeTool = event.toolName
+    const label: Record<string, string> = {
+      read: '读取项目文件', grep: '检索项目内容', find: '查找项目文件', ls: '查看项目目录',
+      write: '生成文件', edit: '修改文件', bash: '执行项目操作', web_search: '查询资料',
     }
-
-    const text = extractTextFromMessageContent(event.message.content)
-    if (!text) {
-      log(`[MSG-END-SKIP] no text content (likely toolCall only)`)
-      return
-    }
-
-    log(`[MSG-END] incremental send to ${targetUserId}, textLen=${text.length} preview=${text.slice(0, 60)} sentCount=${turn.sentCount}`)
-
-    try {
-      const chunks = splitAndFilterMarkdown(text)
-      for (let i = 0; i < chunks.length; i++) {
-        log(`[MSG-END-CHUNK] ${i + 1}/${chunks.length} len=${chunks[i].length}`)
-        await client.sendText(targetUserId, chunks[i])
-      }
-      turn.sentCount++
-      log(`[MSG-END-DONE] incrementally sent, totalSent=${turn.sentCount}`)
-    } catch (err) {
-      log(`[MSG-END-ERROR] ${formatError(err)}`)
-    }
+    await client.sendText(turn.targetUser, `⏳ 正在${label[event.toolName] ?? '处理请求'}...`).catch(() => {})
   })
 
   // agent 结束 → 补发遗漏 + 收尾

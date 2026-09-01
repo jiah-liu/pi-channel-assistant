@@ -150,6 +150,8 @@ async function cmdStatus(_args: string, ctx: Ctx, deps: CommandDeps): Promise<vo
     `排队消息: ${deps.queue.pending}`,
     `凭证路径: ${getCredentialsPath()}`,
     `自动启动: ${config.autoStart ? '已开启' : '已关闭'}`,
+    `授权微信用户: ${config.allowedUserId ?? '未配置（远程消息已拒绝）'}`,
+    `已见用户: ${activeClient?.getKnownUsers().join(', ') || '-'}`,
     `图片合并等待: ${getImageBatchWaitMs()}ms`,
     `图片上限: ${Math.round(getImageMaxBytes() / 1024 / 1024)}MB`,
   ]
@@ -177,8 +179,16 @@ async function cmdConfig(args: string, ctx: Ctx, deps: CommandDeps): Promise<voi
       `自动启动: ${config.autoStart ? '已开启' : '已关闭'}`,
       `图片合并等待: ${getImageBatchWaitMs()}ms`,
       `图片上限: ${Math.round(getImageMaxBytes() / 1024 / 1024)}MB`,
-      '', '用法:', '/wechat config image-wait 8000', '/wechat config image-max 50',
+      `授权微信用户: ${config.allowedUserId ?? '未配置（远程消息已拒绝）'}`,
+      '', '用法:', '/wechat config user <微信用户ID>', '/wechat config image-wait 8000', '/wechat config image-max 50',
     ].join('\n'), 'info')
+    return
+  }
+  if (key === 'user') {
+    if (!value) { deps.notify('请提供微信用户 ID；可先让用户发消息，再用 /wechat status 查看“已见用户”', 'error'); return }
+    config.allowedUserId = value
+    await saveConfig(config)
+    deps.notify('授权微信用户已更新 ✅', 'info')
     return
   }
   const numeric = Number(value)
@@ -188,7 +198,7 @@ async function cmdConfig(args: string, ctx: Ctx, deps: CommandDeps): Promise<voi
   } else if (key === 'image-max') {
     config.imageMaxBytes = Math.round(numeric * 1024 * 1024)
   } else {
-    deps.notify('未知配置项。支持: image-wait, image-max', 'error')
+    deps.notify('未知配置项。支持: user, image-wait, image-max', 'error')
     return
   }
   await saveConfig(config)
@@ -215,7 +225,7 @@ export function registerCommands(pi: ExtensionAPI, deps: CommandDeps): void {
         '/wechat start             启动桥接',
         '/wechat stop              停止桥接',
         '/wechat status            查看状态',
-        '/wechat config            查看/设置配置',
+        '/wechat config            查看/设置配置（先配置 user 才接收远程消息）',
         '/wechat logout            清除凭证并停止',
         '/wechat autostart         开关自动启动',
       ].join('\n')

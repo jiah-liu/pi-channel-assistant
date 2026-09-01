@@ -15,11 +15,32 @@ export interface RemoteCommandDeps {
   getCtx: () => Ctx | null
   client: () => WeixinClient | null
   queueLength: () => number
+  cancelPending: () => void
+  startPending: () => void
+  taskStatus: () => string
+  pendingStatus: () => string
+  requestConfirmation: (action: string, execute: () => Promise<string>) => string
+  approveConfirmation: (code: string) => Promise<string>
 }
 
 type RemoteCommandFn = (args: string, userId: string, client: WeixinClient, deps: RemoteCommandDeps) => Promise<string | null>
 
+let lastModelChoices: Array<{ provider: string; id: string }> = []
+
 const commands: Record<string, RemoteCommandFn> = {
+  async login(args, _userId, _client, deps) {
+    const provider = args.trim()
+    if (!provider) return '用法: /login <provider>，例如 /login openai'
+    if (!/^[\w.-]+$/.test(provider)) return '❌ 无效的 provider 名称'
+    return deps.requestConfirmation(`在服务器端发起 ${provider} 登录`, async () =>
+      '请在服务器 TUI 执行 /login ' + provider + '；若该 provider 支持设备码授权，可在手机浏览器完成。',
+    )
+  },
+
+  async confirm(args, _userId, _client, deps) {
+    return deps.approveConfirmation(args.trim())
+  },
+
   async model(args, userId, client, deps) {
     const ctx = deps.getCtx()
     if (!ctx) return '❌ 会话上下文尚未就绪，请稍后再试'
@@ -27,18 +48,24 @@ const commands: Record<string, RemoteCommandFn> = {
     if (!args) {
       const models = registry.getAvailable()
       const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : 'unknown'
-      const lines = [`当前模型: ${current}`, '', '可用模型:']
+      const lines = [`当前模型: ${current}`, '', '可用模型（可使用 /model 编号 切换）:']
       const seen = new Set<string>()
+      lastModelChoices = []
       for (const m of models) {
         const key = `${m.provider}/${m.id}`
         if (seen.has(key)) continue
         seen.add(key)
-        lines.push(`  ${key}${key === current ? ' ←' : ''}`)
+        lastModelChoices.push({ provider: m.provider, id: m.id })
+        lines.push(`  ${lastModelChoices.length}. ${key}${key === current ? ' ←' : ''}`)
       }
       return lines.join('\n')
     }
     let model
-    if (args.includes('/')) {
+    const choice = Number(args)
+    if (Number.isInteger(choice) && choice >= 1 && choice <= lastModelChoices.length) {
+      const selected = lastModelChoices[choice - 1]
+      model = registry.find(selected.provider, selected.id)
+    } else if (args.includes('/')) {
       const [provider, ...idParts] = args.split('/')
       model = registry.find(provider, idParts.join('/'))
     } else {
@@ -47,10 +74,12 @@ const commands: Record<string, RemoteCommandFn> = {
       }
     }
     if (!model) return `❌ 未找到模型: ${args}\n输入 /model 查看可用列表`
-    const success = await deps.pi.setModel(model)
-    return success
-      ? `✅ 已切换模型: ${model.provider}/${model.id}`
-      : `❌ 切换失败: ${model.provider}/${model.id} 没有可用的 API key`
+    return deps.requestConfirmation(`切换模型到 ${model.provider}/${model.id}`, async () => {
+      const success = await deps.pi.setModel(model)
+      return success
+        ? `✅ 已切换模型: ${model.provider}/${model.id}`
+        : `❌ 切换失败: ${model.provider}/${model.id} 没有可用的 API key`
+    })
   },
 
   async thinking(args, _userId, _client, deps) {
@@ -76,18 +105,40 @@ const commands: Record<string, RemoteCommandFn> = {
     const allNames = deps.pi.getAllTools().map(t => t.name)
     const invalid = toolNames.filter(t => !allNames.includes(t))
     if (invalid.length > 0) return `❌ 未知工具: ${invalid.join(', ')}\n输入 /tools 查看全部`
-    deps.pi.setActiveTools(toolNames.filter(t => allNames.includes(t)))
-    return `✅ 活跃工具已设为: ${toolNames.filter(t => allNames.includes(t)).join(', ')}`
+    return deps.requestConfirmation(`修改活跃工具为 ${toolNames.join(', ')}`, async () => {
+      deps.pi.setActiveTools(toolNames.filter(t => allNames.includes(t)))
+      return `✅ 活跃工具已设为: ${toolNames.filter(t => allNames.includes(t)).join(', ')}`
+    })
   },
 
   async compact(_args, userId, client, deps) {
     const ctx = deps.getCtx()
     if (!ctx) return '❌ 会话上下文尚未就绪'
+    return deps.requestConfirmation('压缩当前会话上下文', async () => {
     ctx.compact({
       onComplete: () => { void client.sendText(userId, '✅ 上下文压缩完成') },
       onError: (error) => { void client.sendText(userId, `❌ 压缩失败: ${error.message}`) },
     })
     return '⏳ 正在压缩上下文...'
+    })
+  },
+
+  async start(_args, _userId, _client, deps) {
+    deps.startPending()
+    return '⏳ 已开始处理当前图片/文件批次'
+  },
+
+  async pending(_args, _userId, _client, deps) {
+    return deps.pendingStatus()
+  },
+
+  async task(_args, _userId, _client, deps) {
+    return deps.taskStatus()
+  },
+
+  async cancel(_args, _userId, _client, deps) {
+    deps.cancelPending()
+    return '✅ 已取消尚未开始处理的消息、图片和文件批次'
   },
 
   async stop(_args, _userId, _client, deps) {
@@ -245,7 +296,13 @@ const commands: Record<string, RemoteCommandFn> = {
       '📋 微信远程命令:',
       '',
       '/status          查看当前状态',
+      '/task            查看当前任务',
+      '/pending         查看待确认操作',
+      '/start           立即处理图片/文件批次',
       '/stop            停止当前生成',
+      '/cancel          取消尚未开始的图片/文件批次',
+      '/login <provider> 请求服务器端账号授权',
+      '/confirm <code>  确认待执行操作',
       '/model           查看 / 切换模型',
       '/name <名称>     设置会话名称',
       '/session         查看会话详情',
@@ -269,7 +326,10 @@ export async function handleRemoteCommand(
   const [cmd, ...rest] = trimmed.slice(1).split(/\s+/)
   const args = rest.join(' ')
   const handler = commands[cmd]
-  if (!handler) return false
+  if (!handler) {
+    await client.sendText(userId, `❌ 未知命令: /${cmd}\n发送 /help 查看可用命令`)
+    return true
+  }
   try {
     const reply = await handler(args, userId, client, deps)
     if (reply !== null) await client.sendText(userId, reply)

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-01
+
+### Added
+- 微信用户授权、一次性远程确认码、任务与待确认状态查询
+- 图片/文件批次的立即开始与取消操作，以及模型编号选择
+- 中文与英文单语言操作文档
+
+### Changed
+- npm 包迁移至 `@jiah-liu/pi-wechat-assistant`，GitHub 仓库迁移至 `jiah-liu/pi-wechat-assistant`
+- 微信回复改为任务完成后统一发送，并提供脱敏工具进度
+
+### Fixed
+- 限制未授权微信用户、符号链接文件外发、超大媒体下载、锁竞争与轮询重复消息
+- 修复文件批处理竞态和过期登录提示
+
 ## [0.3.0] - 2026-06-11
 
 ### Added

@@ -15,6 +15,7 @@ const CREDS_FILE = path.join(STATE_DIR, 'credentials.json')
 const CONFIG_FILE = path.join(STATE_DIR, 'config.json')
 const LOCK_FILE = path.join(STATE_DIR, 'session.lock')
 const CONTEXT_TOKENS_FILE = path.join(STATE_DIR, 'context-tokens.json')
+const UPDATE_CURSOR_FILE = path.join(STATE_DIR, 'update-cursor.json')
 
 export function getStateDir(): string {
   return STATE_DIR
@@ -27,7 +28,8 @@ export function getCredentialsPath(): string {
 // --- 通用文件辅助 ---
 
 async function ensureStateDir(): Promise<void> {
-  await fs.mkdir(STATE_DIR, { recursive: true })
+  await fs.mkdir(STATE_DIR, { recursive: true, mode: 0o700 })
+  await fs.chmod(STATE_DIR, 0o700)
 }
 
 async function readJsonFile<T>(filePath: string): Promise<T | null> {
@@ -42,6 +44,7 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
   await ensureStateDir()
   await fs.writeFile(filePath, JSON.stringify(data, null, 2), { mode: 0o600 })
+  await fs.chmod(filePath, 0o600)
 }
 
 async function deleteFile(filePath: string): Promise<void> {
@@ -68,12 +71,15 @@ export async function clearCredentials(): Promise<void> {
 
 export async function clearContextTokens(): Promise<void> {
   await deleteFile(CONTEXT_TOKENS_FILE)
+  await deleteFile(UPDATE_CURSOR_FILE)
 }
 
 // --- 配置 ---
 
 export interface BridgeConfig {
   autoStart?: boolean
+  /** 允许控制此 pi 会话的微信用户 ID；未配置时拒绝全部远程消息。 */
+  allowedUserId?: string
   /** 图片批量合并等待时间；收到文字补充会立即处理 */
   imageBatchWaitMs?: number
   /** 单张图片最大下载大小，单位字节 */
@@ -121,28 +127,32 @@ async function _readLockFile(): Promise<LockData | null> {
 }
 
 async function _writeLockFile(sessionId: string): Promise<void> {
-  const data: LockData = { pid: process.pid, sessionId, timestamp: Date.now() }
-  await writeJsonFile(LOCK_FILE, data)
+  await writeJsonFile(LOCK_FILE, { pid: process.pid, sessionId, timestamp: Date.now() })
 }
 
 export async function acquireLock(sessionId: string): Promise<{ success: boolean; message: string }> {
-  const existing = await _readLockFile()
-  if (existing) {
-    if (existing.sessionId === sessionId) {
-      await _writeLockFile(sessionId)
-      return { success: true, message: '锁已更新' }
-    }
-    if (isProcessRunning(existing.pid)) {
-      return {
-        success: false,
-        message: `微信已被其他 pi 实例占用 (PID: ${existing.pid})，请先在那个实例中执行 /wechat-stop`,
+  await ensureStateDir()
+  const data = JSON.stringify({ pid: process.pid, sessionId, timestamp: Date.now() })
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await fs.open(LOCK_FILE, 'wx', 0o600)
+      await handle.writeFile(data)
+      await handle.close()
+      return { success: true, message: '成功获取锁' }
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const existing = await _readLockFile()
+      if (existing?.sessionId === sessionId) {
+        await _writeLockFile(sessionId)
+        return { success: true, message: '锁已更新' }
       }
+      if (existing && isProcessRunning(existing.pid)) {
+        return { success: false, message: `微信已被其他 pi 实例占用 (PID: ${existing.pid})，请先在那个实例中执行 /wechat stop` }
+      }
+      await deleteFile(LOCK_FILE)
     }
-    // 进程不存在，锁已失效，可抢占
   }
-
-  await _writeLockFile(sessionId)
-  return { success: true, message: '成功获取锁' }
+  return { success: false, message: '获取微信锁失败，请重试' }
 }
 
 export async function releaseLock(sessionId: string): Promise<void> {
@@ -189,6 +199,20 @@ export async function pollQrStatus(
 }
 
 // --- Context Tokens 持久化 ---
+
+export interface PersistedUpdateCursor {
+  accountId: string
+  cursor: string
+}
+
+export async function loadUpdateCursor(accountId: string): Promise<string> {
+  const data = await readJsonFile<PersistedUpdateCursor>(UPDATE_CURSOR_FILE)
+  return data?.accountId === accountId ? data.cursor : ''
+}
+
+export async function saveUpdateCursor(accountId: string, cursor: string): Promise<void> {
+  await writeJsonFile(UPDATE_CURSOR_FILE, { accountId, cursor })
+}
 
 export interface PersistedContextTokens {
   /** 上次活跃的微信用户 ID */

@@ -27,6 +27,31 @@ function aesDecryptECB(encrypted: Buffer, keyHex: string): Buffer {
   return decrypted.subarray(0, decrypted.length - padLen)
 }
 
+async function readResponseLimited(response: Response, maxBytes: number): Promise<Buffer | null> {
+  const contentLength = Number(response.headers.get('content-length') ?? '0')
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) return null
+  if (!response.body) return Buffer.alloc(0)
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maxBytes) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+    return Buffer.concat(chunks)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 // --- 图片 ---
 
 export interface ImageData {
@@ -53,14 +78,9 @@ export async function fetchImageAsBase64(
       debugLog(`图片下载失败: 非图片 content-type=${rawContentType}`)
       return null
     }
-    const contentLength = Number(response.headers.get('content-length') ?? '0')
-    if (contentLength > maxBytes) {
-      debugLog(`图片下载失败: content-length=${contentLength} 超过限制 ${maxBytes}`)
-      return null
-    }
-    const buffer = Buffer.from(await response.arrayBuffer())
-    if (buffer.byteLength > maxBytes) {
-      debugLog(`图片下载失败: 实际大小=${buffer.byteLength} 超过限制 ${maxBytes}`)
+    const buffer = await readResponseLimited(response, maxBytes)
+    if (!buffer) {
+      debugLog(`图片下载失败: 超过限制 ${maxBytes}`)
       return null
     }
     debugLog(`图片下载成功: ${buffer.byteLength} bytes, type=${contentType}`)
@@ -78,6 +98,7 @@ export async function fetchImageAsBase64(
 export async function fetchFile(
   encryptParam: string,
   aesKey: string | undefined,
+  maxBytes: number,
   signal?: AbortSignal,
 ): Promise<Buffer | null> {
   try {
@@ -88,7 +109,11 @@ export async function fetchFile(
       debugLog(`文件下载失败: HTTP ${response.status}`)
       return null
     }
-    const buffer = Buffer.from(await response.arrayBuffer())
+    const buffer = await readResponseLimited(response, maxBytes)
+    if (!buffer) {
+      debugLog(`文件下载失败: 超过限制 ${maxBytes}`)
+      return null
+    }
     debugLog(`文件下载成功: ${buffer.byteLength} bytes`)
     if (aesKey) {
       const hexKey = Buffer.from(aesKey, 'base64').toString('utf-8')

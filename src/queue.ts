@@ -91,6 +91,8 @@ export class MessageQueue {
 
   /** 待注入的已保存文件列表（文件不进入队列和 AI 注入，等文字/图片触发时拼接） */
   private accumulatedFiles: Array<{ name: string; size: number; path: string }> = []
+  private readonly fileTasks = new Set<Promise<void>>()
+  private fileGeneration = 0
 
   /** 最后对话的微信用户（用于桥接双向同步） */
   lastWechatUser: { userId: string; contextToken: string } | null = null
@@ -132,7 +134,9 @@ export class MessageQueue {
 
     // 文件：立即下载保存 + 自动回复，不入队，不参与计时器
     if (hasFile) {
-      void this._handleFile(message)
+      const task = this._handleFile(message, this.fileGeneration)
+      this.fileTasks.add(task)
+      void task.finally(() => this.fileTasks.delete(task))
     }
 
     // 文字部分
@@ -191,12 +195,12 @@ export class MessageQueue {
   }
 
   /** 文件处理：下载 → 保存到项目目录 → 自动回复 → 累积 */
-  private async _handleFile(message: IncomingMessage): Promise<void> {
+  private async _handleFile(message: IncomingMessage, generation: number): Promise<void> {
     const log = debugLog
     const client = this.getClient()
     const fileName = message.fileName ?? '未知文件'
 
-    const buffer = await fetchFile(message.fileEncryptParam!, message.fileAesKey, this.getPollSignal())
+    const buffer = await fetchFile(message.fileEncryptParam!, message.fileAesKey, getImageMaxBytes(), this.getPollSignal())
     if (!buffer) {
       log(`[FILE-DL-FAIL] ${fileName}`)
       if (client) void client.sendText(message.userId, `⚠️ 文件下载失败: ${fileName}`).catch(() => {})
@@ -214,6 +218,7 @@ export class MessageQueue {
       return
     }
 
+    if (generation !== this.fileGeneration) return
     this.accumulatedFiles.push({ name: fileName, size: buffer.length, path: savedPath })
     log(`[FILE-SAVED] ${fileName} (${(buffer.length / 1024).toFixed(1)} KB) → ${savedPath}`)
 
@@ -268,16 +273,16 @@ export class MessageQueue {
     const log = debugLog
     const client = this.getClient()
 
-    const pendingFiles = this.accumulatedFiles.splice(0)
-
-    log(`[DRAIN-ENTER] running=${this.isRunning()} client=${!!client} queue=${this.queue.length} pendingFiles=${pendingFiles.length} pendingInjection=${!!this.pendingInjection} activeRequest=${!!this.activeRequest} agentIdle=${this.getAgentIdle()} batchTimer=${!!this.batchTimer}`)
+    log(`[DRAIN-ENTER] running=${this.isRunning()} client=${!!client} queue=${this.queue.length} pendingInjection=${!!this.pendingInjection} activeRequest=${!!this.activeRequest} agentIdle=${this.getAgentIdle()} batchTimer=${!!this.batchTimer}`)
     if (!this.isRunning() || !client) { log(`[DRAIN-SKIP] not running or no client`); return }
     if (this.pendingInjection) { log(`[DRAIN-SKIP] pendingInjection already set`); return }
-    if (this.batchTimer) { log(`[DRAIN-SKIP] 批处理计时器运行中`); return }
-    if (this.queue.length === 0 && pendingFiles.length === 0) { log(`[DRAIN-SKIP] queue empty and no pending files`); return }
+    if (this.batchTimer) { log(`[DRAIN-SKIP] 图片批处理计时器运行中`); return }
+    if (this.queue.length === 0) { log(`[DRAIN-SKIP] queue empty`); return }
 
+    await Promise.all([...this.fileTasks])
+    const pendingFiles = this.accumulatedFiles.splice(0)
     const batch = this.queue.splice(0)
-    if (batch.length === 0) { log(`[DRAIN-SKIP] queue empty after splice`); return }
+    if (batch.length === 0) { log(`[DRAIN-SKIP] queue empty after file download`); return }
 
     log(`[DRAIN-BATCH] msgs=${batch.length} pendingFiles=${pendingFiles.length}`)
     this.imageBatchAckSent = false
@@ -331,9 +336,15 @@ export class MessageQueue {
       return
     }
 
+    if (hasFiles || hadImageMessages) {
+      await client.sendText(first.userId, '⏳ 正在处理你发送的内容...').catch(() => {})
+    }
+
+    const source = isBusy ? '【微信追加消息：请结合当前任务处理】' : '【微信消息】'
+
     if (hasFiles) {
       const combinedText = texts.join('\n') + fileNote
-      const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [{ type: 'text', text: combinedText }]
+      const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [{ type: 'text', text: `${source}\n${combinedText}` }]
       for (const img of images) content.push({ type: 'image', data: img.data, mimeType: img.mediaType })
       const deliverOpts = isBusy ? { deliverAs: 'followUp' as const } : undefined
       log(`[DRAIN-SEND] file+text, files=${files.length}, images=${images.length}, mode=${deliverOpts?.deliverAs ?? 'direct'}`)
@@ -341,9 +352,9 @@ export class MessageQueue {
     } else if (hasImages) {
       const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = []
       if (!hasText) {
-        content.push({ type: 'text', text: (images.length === 1 ? '请帮我分析这张图片' : `请帮我分析这 ${images.length} 张图片`) })
+        content.push({ type: 'text', text: `${source}\n${images.length === 1 ? '请帮我分析这张图片' : `请帮我分析这 ${images.length} 张图片`}` })
       } else {
-        content.push({ type: 'text', text: texts.join('\n') })
+        content.push({ type: 'text', text: `${source}\n${texts.join('\n')}` })
       }
       for (const img of images) content.push({ type: 'image', data: img.data, mimeType: img.mediaType })
       const deliverOpts = isBusy ? { deliverAs: 'followUp' as const } : undefined
@@ -352,7 +363,7 @@ export class MessageQueue {
     } else if (hasText) {
       const deliverOpts = isBusy ? { deliverAs: 'followUp' as const } : undefined
       log(`[DRAIN-SEND] text, text=${texts.join(' ').slice(0, 80)}, mode=${deliverOpts?.deliverAs ?? 'direct'}`)
-      this.sendUserMessage(texts.join('\n'), deliverOpts)
+      this.sendUserMessage(`${source}\n${texts.join('\n')}`, deliverOpts)
     } else {
       if (hadImageMessages) {
         const limitMB = Math.round(getImageMaxBytes() / 1024 / 1024)
@@ -387,16 +398,30 @@ export class MessageQueue {
     }
   }
 
+  /** 立即开始当前图片批次。 */
+  startPending(): void {
+    if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = null }
+    void this.drain()
+  }
+
+  /** 取消尚未注入 agent 的消息和图片/文件批处理。 */
+  cancelPending(): void {
+    this.fileGeneration++
+    this.queue.length = 0
+    this.accumulatedFiles = []
+    this.imageBatchAckSent = false
+    if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = null }
+    this.updateStatusBar()
+  }
+
   // --- 重置 ---
 
   reset(): void {
-    this.queue.length = 0
+    this.cancelPending()
     this.pendingInjection = null
     this.activeRequest = null
-    this.imageBatchAckSent = false
-    this.accumulatedFiles = []
+    this.fileTasks.clear()
     this._draining = false
-    if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = null }
   }
 
   get pending(): number {

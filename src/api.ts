@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { randomBytes, randomUUID } from 'node:crypto'
+import { LONG_POLL_TIMEOUT_MS } from './constants.js'
 import type {
   BaseInfo,
   GetConfigResp,
@@ -129,7 +130,7 @@ export async function getUpdates(
     get_updates_buf: cursor,
     base_info: buildBaseInfo(),
   }
-  return apiPost<GetUpdatesResp>(baseUrl, '/ilink/bot/getupdates', body, token, 40_000, signal)
+  return apiPost<GetUpdatesResp>(baseUrl, '/ilink/bot/getupdates', body, token, LONG_POLL_TIMEOUT_MS, signal)
 }
 
 export async function sendMessage(

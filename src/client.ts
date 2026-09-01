@@ -20,7 +20,9 @@ import { debugLog } from './logger.js'
 import type { Credentials, IncomingMessage, MessageItem, WeixinMessage } from './types.js'
 import {
   loadContextTokens,
+  loadUpdateCursor,
   saveContextTokensThrottled,
+  saveUpdateCursor,
   flushContextTokens,
 } from './auth.js'
 import {
@@ -147,7 +149,11 @@ export class WeixinClient {
   }
 
   private async _init(): Promise<void> {
-    const persisted = await loadContextTokens()
+    const [persisted, cursor] = await Promise.all([
+      loadContextTokens(),
+      loadUpdateCursor(this.credentials.accountId),
+    ])
+    this.cursor = cursor
     this._lastActiveUserId = persisted.lastUserId
     for (const [userId, token] of Object.entries(persisted.tokens)) {
       this.contextTokens.set(userId, token)
@@ -186,7 +192,11 @@ export class WeixinClient {
       throw error
     }
 
-    this.cursor = response.get_updates_buf || this.cursor
+    const nextCursor = response.get_updates_buf || this.cursor
+    if (nextCursor !== this.cursor) {
+      this.cursor = nextCursor
+      await saveUpdateCursor(this.credentials.accountId, this.cursor)
+    }
     const incoming: IncomingMessage[] = []
 
     for (const raw of response.msgs ?? []) {
