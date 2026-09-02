@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-09-02
+
+### Added
+- 微信聊天自动提示当前通道与 Agent 待命、处理中、完成状态
+
+### Changed
+- 切换至电脑端时在微信明确提示回复通道
+
 ## [0.3.1] - 2026-09-01
 
 ### Added

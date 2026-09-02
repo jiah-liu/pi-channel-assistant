@@ -301,7 +301,7 @@ export default function wechatAssistant(pi: ExtensionAPI) {
 
     if (activeChannel !== 'wechat') {
       activeChannel = 'wechat'
-      void activeClient.sendText(message.userId, '📱 已切回微信端继续对话。').catch(() => {})
+      void activeClient.sendText(message.userId, '📱 当前通道：微信\n🤖 Agent：待命').catch(() => {})
     }
 
     if (message.text.trim() === '开始') message.text = '/start'
@@ -490,7 +490,7 @@ export default function wechatAssistant(pi: ExtensionAPI) {
     const text = event.text?.trim()
     if (!text || text.startsWith('/')) return
     if (turn.wechatConversationActive && turn.targetUser && client) {
-      void client.sendText(turn.targetUser, '💻 当前会话已切换到电脑端继续，后续回复将显示在电脑端。').catch(() => {})
+      void client.sendText(turn.targetUser, '💻 当前通道：电脑端，后续 Agent 回复将显示在电脑端。').catch(() => {})
     }
     activeChannel = 'tui'
     turn.wechatConversationActive = false
@@ -525,6 +525,7 @@ export default function wechatAssistant(pi: ExtensionAPI) {
       turn.targetUser = queue.activeRequest.userId
       log(`[AGENT-START] turn#${turn.seq} source=WECHAT userId=${turn.targetUser} pendingInjection consumed`)
       queue.pendingInjection = null
+      void client?.sendText(turn.targetUser, '📱 当前通道：微信\n🤖 Agent：处理中...').catch(() => {})
     } else {
       turn.targetUser = queue.lastWechatUser?.userId ?? null
       log(`[AGENT-START] turn#${turn.seq} source=TUI targetUser=${turn.targetUser ?? 'null'}`)
@@ -570,6 +571,10 @@ export default function wechatAssistant(pi: ExtensionAPI) {
       log(`[AGENT-END-NOREPLY] no assistant text`)
     } else {
       log(`[AGENT-END-SAFE] all replies already sent incrementally`)
+    }
+
+    if (turn.wechatConversationActive && client && turn.targetUser) {
+      await client.sendText(turn.targetUser, '🤖 Agent：已完成，等待下一条消息。').catch(() => {})
     }
 
     if (queue.activeRequest) {
