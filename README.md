@@ -22,7 +22,7 @@
 ```bash
 pi install npm:@jiah-liu/pi-channel-assistant
 # 或
-pi install git:github.com/jiah-liu/pi-wechat-assistant
+pi install git:github.com/jiah-liu/pi-channel-assistant
 ```
 
 开发环境：Node.js >= 20.3。

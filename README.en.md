@@ -22,7 +22,7 @@ It is not a public chatbot. A WeChat user can influence a local Agent, its model
 ```bash
 pi install npm:@jiah-liu/pi-channel-assistant
 # or
-pi install git:github.com/jiah-liu/pi-wechat-assistant
+pi install git:github.com/jiah-liu/pi-channel-assistant
 ```
 
 Development requires Node.js >= 20.3:

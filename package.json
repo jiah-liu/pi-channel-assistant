@@ -6,13 +6,13 @@
   "main": "index.ts",
   "license": "MIT",
   "author": "jiah-liu",
-  "homepage": "https://github.com/jiah-liu/pi-wechat-assistant#readme",
+  "homepage": "https://github.com/jiah-liu/pi-channel-assistant#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jiah-liu/pi-wechat-assistant.git"
+    "url": "git+https://github.com/jiah-liu/pi-channel-assistant.git"
   },
   "bugs": {
-    "url": "https://github.com/jiah-liu/pi-wechat-assistant/issues"
+    "url": "https://github.com/jiah-liu/pi-channel-assistant/issues"
   },
   "keywords": [
     "pi",
