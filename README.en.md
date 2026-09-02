@@ -1,11 +1,11 @@
-<h1 align="center">pi-wechat-assistant</h1>
+<h1 align="center">pi-channel-assistant</h1>
 
-<p align="center">A secure WeChat remote entry point for a <a href="https://github.com/earendil-works/pi-coding-agent">pi</a> session.</p>
+<p align="center">An extensible, secure remote entry point for a <a href="https://github.com/earendil-works/pi-coding-agent">pi</a> session; currently supporting WeChat.</p>
 
 <p align="center">
   <a href="README.md"><img src="https://img.shields.io/badge/中文-switch-lightgrey" alt="Switch to Chinese"></a>
   <a href="README.en.md"><img src="https://img.shields.io/badge/English-current-blue" alt="English"></a>
-  <a href="https://www.npmjs.com/package/%40jiah-liu%2Fpi-wechat-assistant"><img src="https://img.shields.io/npm/v/%40jiah-liu%2Fpi-wechat-assistant?color=blue" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/%40jiah-liu%2Fpi-channel-assistant"><img src="https://img.shields.io/npm/v/%40jiah-liu%2Fpi-channel-assistant?color=blue" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
 </p>
 
@@ -20,7 +20,7 @@ It is not a public chatbot. A WeChat user can influence a local Agent, its model
 ## Install
 
 ```bash
-pi install npm:@jiah-liu/pi-wechat-assistant
+pi install npm:@jiah-liu/pi-channel-assistant
 # or
 pi install git:github.com/jiah-liu/pi-wechat-assistant
 ```

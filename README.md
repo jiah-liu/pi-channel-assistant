@@ -1,11 +1,11 @@
-<h1 align="center">pi-wechat-assistant</h1>
+<h1 align="center">pi-channel-assistant</h1>
 
-<p align="center">将微信作为 <a href="https://github.com/earendil-works/pi-coding-agent">pi</a> 会话的安全远程入口。</p>
+<p align="center"><a href="https://github.com/earendil-works/pi-coding-agent">pi</a> 会话的可扩展安全远程入口；当前支持微信。</p>
 
 <p align="center">
   <a href="README.md"><img src="https://img.shields.io/badge/中文-当前-blue" alt="中文"></a>
   <a href="README.en.md"><img src="https://img.shields.io/badge/English-switch-lightgrey" alt="Switch to English"></a>
-  <a href="https://www.npmjs.com/package/%40jiah-liu%2Fpi-wechat-assistant"><img src="https://img.shields.io/npm/v/%40jiah-liu%2Fpi-wechat-assistant?color=blue" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/%40jiah-liu%2Fpi-channel-assistant"><img src="https://img.shields.io/npm/v/%40jiah-liu%2Fpi-channel-assistant?color=blue" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
 </p>
 
@@ -20,7 +20,7 @@
 ## 安装
 
 ```bash
-pi install npm:@jiah-liu/pi-wechat-assistant
+pi install npm:@jiah-liu/pi-channel-assistant
 # 或
 pi install git:github.com/jiah-liu/pi-wechat-assistant
 ```

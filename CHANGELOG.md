@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-02
+
+### Changed
++- 项目与 npm 包更名为 `@jiah-liu/pi-channel-assistant`，为飞书、企业微信等后续通道预留统一定位
+
 ## [0.3.3] - 2026-09-02
 
 ### Added
