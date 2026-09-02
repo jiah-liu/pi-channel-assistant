@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-02
+
+### Added
+- 微信桥接断线恢复后向最近授权用户提示已重连
+- 会话锁释放与陈旧锁清理测试
+
+### Changed
+- GitHub Actions 通过 npm Trusted Publishing 发布并附带 provenance
+- Agent 完成状态由最终回复表达，减少微信消息噪音
+
 ## [0.3.2] - 2026-09-02
 
 ### Added

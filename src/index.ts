@@ -248,9 +248,15 @@ export default function wechatAssistant(pi: ExtensionAPI) {
 
   async function pollMessages(activeClient: WeixinClient): Promise<void> {
     let retryDelay = POLL_RETRY_BASE_MS
+    let disconnected = false
     while (running && client === activeClient) {
       try {
         const messages = await activeClient.getUpdates(pollAbort?.signal)
+        if (disconnected) {
+          disconnected = false
+          const userId = queue.lastWechatUser?.userId
+          if (userId) void activeClient.sendText(userId, '📶 微信桥接已重连。').catch(() => {})
+        }
         retryDelay = POLL_RETRY_BASE_MS
         for (const message of messages) {
           await handleIncomingMessage(message, activeClient)
@@ -262,7 +268,8 @@ export default function wechatAssistant(pi: ExtensionAPI) {
           await stopBridge({ releaseLock: true })
           break
         }
-        log(`轮询失败: ${formatError(error)}`)
+        if (!disconnected) log(`微信桥接已断开: ${formatError(error)}`)
+        disconnected = true
         await delay(retryDelay)
         retryDelay = Math.min(retryDelay * 2, POLL_RETRY_MAX_MS)
       }
@@ -571,10 +578,6 @@ export default function wechatAssistant(pi: ExtensionAPI) {
       log(`[AGENT-END-NOREPLY] no assistant text`)
     } else {
       log(`[AGENT-END-SAFE] all replies already sent incrementally`)
-    }
-
-    if (turn.wechatConversationActive && client && turn.targetUser) {
-      await client.sendText(turn.targetUser, '🤖 Agent：已完成，等待下一条消息。').catch(() => {})
     }
 
     if (queue.activeRequest) {
